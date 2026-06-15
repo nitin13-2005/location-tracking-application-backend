@@ -4,17 +4,15 @@ const express = require("express");
 const http = require("http");
 const cors = require("cors");
 const { Server } = require("socket.io");
-const bcrypt = require('bcrypt');
-const { sql, connectDB } = require("./db");
-const jwt = require('jsonwebtoken');
+const bcrypt = require("bcrypt");
+const jwt = require("jsonwebtoken");
+const fs = require("fs");
+const path = require("path");
 const app = express();
 const server = http.createServer(app);
 
 app.use(cors());
-process.env.JWT_SECRET
 app.use(express.json());
-
-connectDB();
 
 const io = new Server(server, {
   cors: {
@@ -23,88 +21,21 @@ const io = new Server(server, {
   },
 });
 
-io.on("connection", (socket) => {
-  console.log(`User Connected: ${socket.id}`);
+const usersFile = path.join(__dirname, "users.json");
+const locationsFile = path.join(__dirname, "locations.json");
 
-  socket.on("liveLocation", async (data) => {
-    try {
-      const { userName, latitude, longitude } = data;
+if (!fs.existsSync(usersFile)) {
+  fs.writeFileSync(usersFile, JSON.stringify([], null, 2));
+}
 
-      if (!userName || latitude == null || longitude == null) {
-        return;
-      }
+if (!fs.existsSync(locationsFile)) {
+  fs.writeFileSync(locationsFile, JSON.stringify([], null, 2));
+}
 
-      await sql.query`
-        MERGE Locations AS target
-        USING (
-          SELECT
-            ${userName} AS UserName,
-            ${latitude} AS Latitude,
-            ${longitude} AS Longitude
-        ) AS source
-        ON target.UserName = source.UserName
-
-        WHEN MATCHED THEN
-          UPDATE SET
-            Latitude = source.Latitude,
-            Longitude = source.Longitude,
-            CreatedAt = GETDATE()
-
-        WHEN NOT MATCHED THEN
-          INSERT (
-            UserName,
-            Latitude,
-            Longitude
-          )
-          VALUES (
-            source.UserName,
-            source.Latitude,
-            source.Longitude
-          );
-      `;
-
-      io.emit("locationUpdated", {
-        userName,
-        latitude,
-        longitude,
-        updatedAt: new Date(),
-      });
-
-      console.log(
-        `${userName}: ${latitude}, ${longitude}`
-      );
-    } catch (error) {
-      console.error("Location Error:", error);
-    }
-  });
-
-  socket.on("disconnect", () => {
-    console.log(`Disconnected: ${socket.id}`);
-  });
-});
-
-app.get("/locations", async (req, res) => {
-  try {
-    const result = await sql.query`
-      SELECT *
-      FROM Locations
-      ORDER BY CreatedAt DESC
-    `;
-
-    res.json(result.recordset);
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      message: error.message,
-    });
-  }
-});
-
+// SIGNUP
 app.post("/signup", async (req, res) => {
   try {
-    let { name, email, password } = req.body;
-
-    email = email?.toLowerCase().trim();
+    const { name, email, password } = req.body;
 
     if (!name || !email || !password) {
       return res.status(400).json({
@@ -113,13 +44,15 @@ app.post("/signup", async (req, res) => {
       });
     }
 
-    const checkUser = await sql.query`
-      SELECT * 
-      FROM Persons
-      WHERE email = ${email}
-    `;
+    const users = JSON.parse(
+      fs.readFileSync(usersFile, "utf8")
+    );
 
-    if (checkUser.recordset.length > 0) {
+    const exists = users.find(
+      (u) => u.email.toLowerCase() === email.toLowerCase()
+    );
+
+    if (exists) {
       return res.status(400).json({
         success: false,
         message: "Email already exists",
@@ -128,22 +61,24 @@ app.post("/signup", async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const result = await sql.query`
-      INSERT INTO Persons (name, email, password)
-      OUTPUT INSERTED.id
-      VALUES (${name}, ${email}, ${hashedPassword})
-    `;
+    users.push({
+      id: Date.now(),
+      name,
+      email: email.toLowerCase(),
+      password: hashedPassword,
+      createdAt: new Date().toISOString(),
+    });
 
-    const userId = result.recordset[0].id;
+    fs.writeFileSync(
+      usersFile,
+      JSON.stringify(users, null, 2)
+    );
 
     res.status(201).json({
       success: true,
       message: "User registered successfully",
-      userId,
     });
   } catch (err) {
-    console.error(err);
-
     res.status(500).json({
       success: false,
       message: err.message,
@@ -151,41 +86,32 @@ app.post("/signup", async (req, res) => {
   }
 });
 
-
+// LOGIN
 app.post("/login", async (req, res) => {
   try {
-    let { email, password } = req.body;
+    const { email, password } = req.body;
 
-    email = email?.toLowerCase().trim();
+    const users = JSON.parse(
+      fs.readFileSync(usersFile, "utf8")
+    );
 
-    if (!email || !password) {
-      return res.status(400).json({
-        success: false,
-        message: "Email and password are required",
-      });
-    }
+    const user = users.find(
+      (u) => u.email.toLowerCase() === email.toLowerCase()
+    );
 
-    const result = await sql.query`
-      SELECT *
-      FROM Persons
-      WHERE email = ${email}
-    `;
-
-    if (result.recordset.length === 0) {
+    if (!user) {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
       });
     }
 
-    const user = result.recordset[0];
-
-    const isMatch = await bcrypt.compare(
+    const match = await bcrypt.compare(
       password,
       user.password
     );
 
-    if (!isMatch) {
+    if (!match) {
       return res.status(401).json({
         success: false,
         message: "Invalid email or password",
@@ -198,14 +124,11 @@ app.post("/login", async (req, res) => {
         email: user.email,
       },
       process.env.JWT_SECRET,
-      {
-        expiresIn: "1h",
-      }
+      { expiresIn: "1h" }
     );
 
-    res.status(200).json({
+    res.json({
       success: true,
-      message: "Login successful",
       token,
       user: {
         id: user.id,
@@ -214,8 +137,6 @@ app.post("/login", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error(err);
-
     res.status(500).json({
       success: false,
       message: err.message,
@@ -223,6 +144,80 @@ app.post("/login", async (req, res) => {
   }
 });
 
-server.listen(5000, "0.0.0.0", () => {
-  console.log("Server running on port 5000");
+// SOCKET LOCATION TRACKING
+io.on("connection", (socket) => {
+  console.log("Connected:", socket.id);
+
+  socket.on("liveLocation", (data) => {
+    try {
+      const { userName, latitude, longitude } = data;
+
+      if (!userName || latitude == null || longitude == null) {
+        return;
+      }
+
+      let locations = JSON.parse(
+        fs.readFileSync(locationsFile, "utf8")
+      );
+
+      const index = locations.findIndex(
+        (u) => u.userName === userName
+      );
+
+      const locationData = {
+        userName,
+        latitude,
+        longitude,
+        updatedAt: new Date().toISOString(),
+      };
+
+      if (index !== -1) {
+        locations[index] = locationData;
+      } else {
+        locations.push(locationData);
+      }
+
+      fs.writeFileSync(
+        locationsFile,
+        JSON.stringify(locations, null, 2)
+      );
+
+      io.emit("locationUpdated", locationData);
+
+      console.log(
+        `${userName}: ${latitude}, ${longitude}`
+      );
+    } catch (err) {
+      console.error(err);
+    }
+  });
+
+  socket.on("disconnect", () => {
+    console.log("Disconnected:", socket.id);
+  });
+});
+
+// GET ALL LOCATIONS
+app.get("/locations", (req, res) => {
+  try {
+    const locations = JSON.parse(
+      fs.readFileSync(locationsFile, "utf8")
+    );
+
+    res.json({
+      success: true,
+      locations,
+    });
+  } catch (err) {
+    res.status(500).json({
+      success: false,
+      message: err.message,
+    });
+  }
+});
+
+const PORT = process.env.PORT || 5000;
+
+server.listen(PORT, "0.0.0.0", () => {
+  console.log(`Server Running On Port ${PORT}`);
 });
