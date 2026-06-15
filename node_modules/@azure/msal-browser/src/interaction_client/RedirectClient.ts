@@ -197,7 +197,9 @@ export class RedirectClient extends StandardInteractionClient {
             this.config.auth.clientId,
             this.correlationId,
             this.browserStorage,
-            this.logger
+            this.logger,
+            undefined,
+            this.config.system.serverTelemetryEnabled
         );
 
         const pkceCodes = await invokeAsync(
@@ -417,7 +419,9 @@ export class RedirectClient extends StandardInteractionClient {
             this.config.auth.clientId,
             this.correlationId,
             this.browserStorage,
-            this.logger
+            this.logger,
+            undefined,
+            this.config.system.serverTelemetryEnabled
         );
 
         const navigateToLoginRequestUrl =
@@ -455,9 +459,15 @@ export class RedirectClient extends StandardInteractionClient {
                     true
                 ) || "";
             const loginRequestUrlNormalized =
-                UrlUtils.normalizeUrlForComparison(loginRequestUrl);
+                UrlUtils.normalizeUrlForComparison(
+                    loginRequestUrl,
+                    this.logger,
+                    this.correlationId
+                );
             const currentUrlNormalized = UrlUtils.normalizeUrlForComparison(
-                window.location.href
+                window.location.href,
+                this.logger,
+                this.correlationId
             );
 
             if (
@@ -518,8 +528,8 @@ export class RedirectClient extends StandardInteractionClient {
                  * The start page is expected to also call handleRedirectPromise which will process the hash in one of the checks above.
                  */
                 let processHashOnRedirect: boolean = true;
-                if (!loginRequestUrl || loginRequestUrl === "null") {
-                    // Redirect to home page if login request url is null (real null or the string null)
+                if (!loginRequestUrl) {
+                    // Redirect to home page if login request url is empty
                     const homepage = BrowserUtils.getHomepage();
                     // Cache the homepage under ORIGIN_URI to ensure cached hash is processed on homepage
                     this.browserStorage.setTemporaryCache(
@@ -820,7 +830,9 @@ export class RedirectClient extends StandardInteractionClient {
             this.config.auth.clientId,
             this.correlationId,
             this.browserStorage,
-            this.logger
+            this.logger,
+            undefined,
+            this.config.system.serverTelemetryEnabled
         );
 
         try {
@@ -974,9 +986,16 @@ export class RedirectClient extends StandardInteractionClient {
      */
     protected getRedirectStartPage(requestStartPage?: string): string {
         const redirectStartPage = requestStartPage || window.location.href;
-        return UrlString.getAbsoluteUrl(
+        const absoluteRedirectStartPage = UrlString.getAbsoluteUrl(
             redirectStartPage,
             BrowserUtils.getCurrentUri()
         );
+        // Sanity check the URL before it is cached so we never persist a malformed value (e.g. the literal string "null")
+        UrlUtils.validateUrl(
+            absoluteRedirectStartPage,
+            this.logger,
+            this.correlationId
+        );
+        return absoluteRedirectStartPage;
     }
 }
